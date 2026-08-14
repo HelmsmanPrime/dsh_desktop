@@ -63,6 +63,10 @@ npm run dist             # 输出 release/ 下的 NSIS 安装包与便携版
 
 ## 故障排查
 
+- **双击 exe 无反应/黑屏**:
+  - 请从**文件资源管理器**双击(不要在 IDE/终端等宿主环境内启动,宿主可能注入 `NODE_OPTIONS` 导致 Electron 崩溃)。新版主进程已对后端子进程做 `NODE_OPTIONS` 隔离。
+  - 首次启动约需 30-60 秒(冷启动后端 + 初始化用户数据),期间显示加载动画,不要误判为死机。
+- **SmartScreen / 杀软拦截(未签名 exe)**:右键 exe → 属性 → 勾选「解除锁定」;或在 SmartScreen 弹窗中点击「更多信息 → 仍要运行」。这是未签名应用的正常提示。
 - **后端启动超时**:查看 `%APPDATA%/DSH Desktop/dsh-home/profiles/web` 日志,常见原因:原生二进制缺失 → 重新运行 `npm run build:backend`。
-- **端口被占用**:修改 `desktop/main.js` 中的 `PORT` 常量并重建闭包。
+- **端口被占用**:新版会自动探测可用端口(从 36320 起),无需手动修改。
 - **加载插件失败**:检查 `.backend/node_modules/@koromix/`、`@img/` 目录是否包含 win32-x64 平台包。
