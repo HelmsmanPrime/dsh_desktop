@@ -31,6 +31,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "icon-data.js",
       "package.json"
     ],
     "extraResources": [

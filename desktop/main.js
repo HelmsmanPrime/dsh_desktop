@@ -8,6 +8,7 @@ const net = require("node:net");
 const path = require("node:path");
 const fs = require("node:fs");
 const os = require("node:os");
+const { APP_ICON_DATA_URI } = require("./icon-data.js");
 
 const APP_TITLE = "DSH Desktop";
 const BASE_PORT = 36320;
@@ -111,15 +112,15 @@ const LOADING_HTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf
 <style>
   html,body{margin:0;height:100%;background:#0f1115;color:#e8ecf4;font-family:"Segoe UI","Microsoft YaHei",sans-serif}
   .wrap{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px}
-  .logo{width:72px;height:72px;border-radius:18px;background:linear-gradient(180deg,#10162c,#2d60ff);
-    display:flex;align-items:center;justify-content:center;font-size:38px;font-weight:700;color:#fff}
+  .logo{width:72px;height:72px;border-radius:18px;object-fit:contain;display:block;
+    box-shadow:0 10px 34px rgba(0,0,0,.45)}
   .title{font-size:20px;font-weight:600;letter-spacing:.5px}
   .spinner{width:28px;height:28px;border:3px solid #2d60ff33;border-top-color:#4d6bfe;border-radius:50%;
     animation:spin 1s linear infinite}
   @keyframes spin{to{transform:rotate(360deg)}}
   .hint{font-size:13px;color:#8b93a7}
 </style></head><body><div class="wrap">
-  <div class="logo">&gt;</div>
+  <img class="logo" alt="DSH Desktop" src="${APP_ICON_DATA_URI}"/>
   <div class="title">正在启动 dsh 服务…</div>
   <div class="spinner"></div>
   <div class="hint">首次启动可能需要 30-60 秒</div>
