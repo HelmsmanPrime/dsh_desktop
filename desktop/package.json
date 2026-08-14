@@ -11,8 +11,8 @@
     "start": "electron .",
     "build:backend": "node scripts/build-backend.mjs",
     "pack": "npm run build:backend && electron-builder --dir",
-    "dist": "npm run build:backend && electron-builder && node scripts/make-portable-sfx.mjs",
-    "dist:win": "npm run build:backend && electron-builder --win && node scripts/make-portable-sfx.mjs"
+    "dist": "npm run build:backend && electron-builder --dir && node scripts/make-portable-sfx.mjs && node scripts/make-installer.mjs",
+    "dist:win": "npm run build:backend && electron-builder --dir --win && node scripts/make-portable-sfx.mjs && node scripts/make-installer.mjs"
   },
   "devDependencies": {
     "electron": "^31.7.7",

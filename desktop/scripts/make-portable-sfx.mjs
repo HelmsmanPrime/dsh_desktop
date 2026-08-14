@@ -62,6 +62,9 @@ async function main() {
     throw new Error(`先构建 win-unpacked: ${winUnpacked}`);
   }
 
+  // 说明:win-unpacked 主程序图标由 electron-builder 的 win.icon 在 --dir 阶段写入,
+  // 无需再 rcedit(对 Electron 生成的 PE 调用 rcedit 会偶发截断文件)。
+
   const sfx = findSfx();
   const z7 = find7za();
   const tmpDir = fs.mkdtempSync(path.join(require("os").tmpdir(), "dsh-sfx-"));
