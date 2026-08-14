@@ -11,8 +11,8 @@
     "start": "electron .",
     "build:backend": "node scripts/build-backend.mjs",
     "pack": "npm run build:backend && electron-builder --dir",
-    "dist": "npm run build:backend && electron-builder",
-    "dist:win": "npm run build:backend && electron-builder --win"
+    "dist": "npm run build:backend && electron-builder && node scripts/make-portable-sfx.mjs",
+    "dist:win": "npm run build:backend && electron-builder --win && node scripts/make-portable-sfx.mjs"
   },
   "devDependencies": {
     "electron": "^31.7.7",
@@ -48,8 +48,7 @@
     ],
     "win": {
       "target": [
-        "nsis",
-        "portable"
+        "nsis"
       ],
       "icon": "build/icon.ico"
     },
