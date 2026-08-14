@@ -1,13 +1,16 @@
 // DSH Desktop — Electron 主进程
-// 职责:启动本地 dsh web 服务(内置 node + backend 闭包),等待就绪后加载 UI。
-const { app, BrowserWindow, dialog, shell } = require("electron");
+// 职责:立即显示窗口(加载动画),后台启动本地 dsh web 服务(内置 node + backend 闭包),
+// 就绪后加载 UI;失败时在窗口内展示错误详情。
+const { app, BrowserWindow, shell } = require("electron");
 const { spawn } = require("node:child_process");
 const http = require("node:http");
+const net = require("node:net");
 const path = require("node:path");
 const fs = require("node:fs");
 
-const PORT = 36320;
 const APP_TITLE = "DSH Desktop";
+const BASE_PORT = 36320;
+const MAX_PORT_TRIES = 20;
 
 // 后端根目录:打包后为 resources/backend,开发模式为仓库根
 function backendRoot() {
@@ -24,8 +27,25 @@ function nodeBinary() {
   return process.env.DSH_DESKTOP_NODE || "node";
 }
 
-function waitForServer(timeoutMs = 180000) {
-  const url = `http://127.0.0.1:${PORT}/`;
+// 探测可用端口(避免与已运行实例/其他程序冲突)
+function findFreePort(start) {
+  return new Promise((resolve, reject) => {
+    const tryPort = (port, attempts) => {
+      if (attempts <= 0) return reject(new Error("未找到可用端口"));
+      const srv = net.createServer();
+      srv.unref();
+      srv.once("error", () => tryPort(port + 1, attempts - 1));
+      srv.listen(port, "127.0.0.1", () => {
+        const p = srv.address().port;
+        srv.close(() => resolve(p));
+      });
+    };
+    tryPort(start, MAX_PORT_TRIES);
+  });
+}
+
+function waitForServer(port, timeoutMs = 240000) {
+  const url = `http://127.0.0.1:${port}/`;
   return new Promise((resolve, reject) => {
     const start = Date.now();
     const attempt = () => {
@@ -49,30 +69,80 @@ function waitForServer(timeoutMs = 180000) {
 let backendProc = null;
 let mainWindow = null;
 
-async function startBackend() {
+const LOADING_HTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/>
+<style>
+  html,body{margin:0;height:100%;background:#0f1115;color:#e8ecf4;font-family:"Segoe UI","Microsoft YaHei",sans-serif}
+  .wrap{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px}
+  .logo{width:72px;height:72px;border-radius:18px;background:linear-gradient(180deg,#10162c,#2d60ff);
+    display:flex;align-items:center;justify-content:center;font-size:38px;font-weight:700;color:#fff}
+  .title{font-size:20px;font-weight:600;letter-spacing:.5px}
+  .spinner{width:28px;height:28px;border:3px solid #2d60ff33;border-top-color:#4d6bfe;border-radius:50%;
+    animation:spin 1s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .hint{font-size:13px;color:#8b93a7}
+</style></head><body><div class="wrap">
+  <div class="logo">&gt;</div>
+  <div class="title">正在启动 dsh 服务…</div>
+  <div class="spinner"></div>
+  <div class="hint">首次启动可能需要 30-60 秒</div>
+</div></body></html>`;
+
+function errorPage(message) {
+  const esc = String(message).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/>
+<style>
+  html,body{margin:0;height:100%;background:#0f1115;color:#e8ecf4;font-family:"Segoe UI","Microsoft YaHei",sans-serif}
+  .wrap{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:32px;text-align:center}
+  .icon{font-size:44px}.title{font-size:20px;font-weight:600}.msg{font-size:13px;color:#aab3c5;max-width:560px;word-break:break-all;line-height:1.6}
+  code{background:#1a2030;padding:2px 6px;border-radius:4px}
+</style></head><body><div class="wrap">
+  <div class="icon">⚠️</div>
+  <div class="title">dsh 服务启动失败</div>
+  <div class="msg">${esc}</div>
+</div></body></html>`;
+}
+
+async function startBackend(port) {
   const root = backendRoot();
   const binJs = path.join(root, "apps", "cli", "lib", "bin.js");
   if (!fs.existsSync(binJs)) {
-    throw new Error(`未找到 dsh 后端入口: ${binJs}\n请先运行 npm run build:backend`);
+    throw new Error(`未找到 dsh 后端入口: ${binJs}\n\n请确认安装包完整(缺少 backend 资源)。`);
   }
   const dshHome = path.join(app.getPath("userData"), "dsh-home");
   fs.mkdirSync(dshHome, { recursive: true });
 
-  backendProc = spawn(nodeBinary(), [binJs, "web", "--port", String(PORT)], {
-    cwd: root,
-    env: { ...process.env, DSH_HOME: dshHome },
-    stdio: ["ignore", "pipe", "pipe"],
-    windowsHide: true,
+  return new Promise((resolve, reject) => {
+    // 清空 NODE_OPTIONS:避免宿主环境(如 WorkBuddy)注入的 shim / --use-system-ca
+    // 干扰后端进程;DSH_HOME 隔离到应用数据目录
+    const env = { ...process.env, DSH_HOME: dshHome, NODE_OPTIONS: "" };
+    backendProc = spawn(nodeBinary(), [binJs, "web", "--port", String(port)], {
+      cwd: root,
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    let stderrTail = "";
+    backendProc.stdout.on("data", (d) => console.log("[dsh]", String(d).trim()));
+    backendProc.stderr.on("data", (d) => {
+      const s = String(d);
+      stderrTail = (stderrTail + s).slice(-4000);
+      console.error("[dsh]", s.trim());
+    });
+    backendProc.on("exit", (code, sig) => {
+      console.log(`[dsh] backend exited (${code ?? sig})`);
+      if (mainWindow && !mainWindow.isDestroyed() && code !== 0) {
+        mainWindow.loadURL(
+          "data:text/html;charset=utf-8," +
+            encodeURIComponent(errorPage(`后端进程意外退出(exit ${code ?? sig})。\n\n${stderrTail}`))
+        );
+      }
+    });
+    waitForServer(port)
+      .then(resolve)
+      .catch((err) => {
+        reject(new Error(`${err.message}\n\n后端输出:\n${stderrTail || "(无输出)"}`));
+      });
   });
-  backendProc.stdout.on("data", (d) => console.log("[dsh]", String(d).trim()));
-  backendProc.stderr.on("data", (d) => console.error("[dsh]", String(d).trim()));
-  backendProc.on("exit", (code, sig) => {
-    console.log(`[dsh] backend exited (${code ?? sig})`);
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send("backend-exited", { code, sig });
-    }
-  });
-  await waitForServer();
 }
 
 function createWindow() {
@@ -84,6 +154,7 @@ function createWindow() {
     title: APP_TITLE,
     autoHideMenuBar: true,
     backgroundColor: "#0f1115",
+    show: true,
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
@@ -95,21 +166,35 @@ function createWindow() {
     if (/^https?:/.test(url)) shell.openExternal(url);
     return { action: "deny" };
   });
-  mainWindow.loadURL(`http://127.0.0.1:${PORT}/`);
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
 }
 
 app.whenReady().then(async () => {
+  createWindow();
+  // 立即显示加载页,再异步启动后端
+  mainWindow.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(LOADING_HTML));
+
+  let port;
   try {
-    await startBackend();
+    port = await findFreePort(BASE_PORT);
+    await startBackend(port);
   } catch (err) {
-    dialog.showErrorBox(APP_TITLE, `无法启动 dsh 服务:\n\n${err.message}`);
-    app.quit();
+    console.error("启动失败:", err);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.loadURL(
+        "data:text/html;charset=utf-8," + encodeURIComponent(errorPage(err.message))
+      );
+    }
     return;
   }
-  createWindow();
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.loadURL(`http://127.0.0.1:${port}/`);
+    mainWindow.setTitle(APP_TITLE);
+  }
+
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
