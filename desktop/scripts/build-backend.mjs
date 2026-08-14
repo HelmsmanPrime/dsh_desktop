@@ -106,18 +106,32 @@ while (queue.length) {
   }
 }
 
+/** 带重试的拷贝:规避杀毒软件/其他进程短暂占用文件(EPERM/EPIPE/EBUSY) */
+function cpRetry(s, d, attempt = 0) {
+  try {
+    fs.cpSync(s, d, { recursive: true, dereference: true });
+    return true;
+  } catch (err) {
+    const transient = /EPIPE|EPERM|EBUSY|ETXTBSY|EMFILE|ENOTEMPTY|EACCES/i.test(
+      err.code || err.message
+    );
+    if (transient && attempt < 5) {
+      const wait = 500 * (attempt + 1);
+      console.warn(`[retry ${attempt + 1}] 文件被占用, ${wait}ms 后重试: ${path.basename(s)}`);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, wait);
+      return cpRetry(s, d, attempt + 1);
+    }
+    console.warn(`[warn] 拷贝失败 ${s}: ${err.message}`);
+    return false;
+  }
+}
+
 /** 拷贝包目录(排除 node_modules 子目录,避免重复) */
 function copyPackage(src, dest) {
   fs.mkdirSync(dest, { recursive: true });
   for (const entry of fs.readdirSync(src)) {
     if (entry === "node_modules" || entry === ".git") continue;
-    const s = path.join(src, entry);
-    const d = path.join(dest, entry);
-    try {
-      fs.cpSync(s, d, { recursive: true, dereference: true });
-    } catch (err) {
-      console.warn(`[warn] 拷贝失败 ${s}: ${err.message}`);
-    }
+    cpRetry(path.join(src, entry), path.join(dest, entry));
   }
 }
 
@@ -158,8 +172,10 @@ for (const [name, dir] of closure) {
 fs.mkdirSync(runtimeDir, { recursive: true });
 const candidates = [
   process.env.DSH_DESKTOP_NODE,
+  process.execPath, // 运行本脚本的 node 自身,最可靠(保证架构/路径正确)
   "C:/Users/任福豪/.workbuddy/binaries/node/versions/22.22.2/node.exe",
   "C:/Program Files/nodejs/node.exe",
+  "C:/Program Files (x86)/nodejs/node.exe",
 ].filter(Boolean);
 let nodeCopied = false;
 for (const c of candidates) {

@@ -7,10 +7,48 @@ const http = require("node:http");
 const net = require("node:net");
 const path = require("node:path");
 const fs = require("node:fs");
+const os = require("node:os");
 
 const APP_TITLE = "DSH Desktop";
 const BASE_PORT = 36320;
 const MAX_PORT_TRIES = 20;
+
+// 落盘日志:便于排查后端启动失败(写到用户数据目录)
+function logPath() {
+  try {
+    return path.join(app.getPath("userData"), "dsh-desktop.log");
+  } catch {
+    return path.join(os.tmpdir(), "dsh-desktop.log");
+  }
+}
+function log(...args) {
+  const line = args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join(" ");
+  try {
+    fs.appendFileSync(logPath(), `[${new Date().toISOString()}] ${line}\n`);
+  } catch {
+    /* ignore */
+  }
+}
+
+// DSH_HOME:使用应用数据目录,与命令行 dsh 的 ~/.dsh 隔离
+function dshHomePath() {
+  return path.join(app.getPath("userData"), "dsh-home");
+}
+
+// 备份并重置 DSH_HOME(用于后端因数据损坏无法启动时自救)
+function resetDshHome() {
+  const home = dshHomePath();
+  const bak = `${home}.bak.${Date.now()}`;
+  try {
+    if (fs.existsSync(home)) fs.renameSync(home, bak);
+    fs.mkdirSync(home, { recursive: true });
+    log("DSH_HOME 已重置:", home, "原目录备份到:", bak);
+    return true;
+  } catch (err) {
+    log("DSH_HOME 重置失败:", err.message);
+    return false;
+  }
+}
 
 // 后端根目录:打包后为 resources/backend,开发模式为仓库根
 function backendRoot() {
@@ -102,20 +140,22 @@ function errorPage(message) {
 </div></body></html>`;
 }
 
-async function startBackend(port) {
+async function startBackend(port, timeoutMs = 45000) {
   const root = backendRoot();
   const binJs = path.join(root, "apps", "cli", "lib", "bin.js");
   if (!fs.existsSync(binJs)) {
     throw new Error(`未找到 dsh 后端入口: ${binJs}\n\n请确认安装包完整(缺少 backend 资源)。`);
   }
-  const dshHome = path.join(app.getPath("userData"), "dsh-home");
+  const dshHome = dshHomePath();
   fs.mkdirSync(dshHome, { recursive: true });
 
   return new Promise((resolve, reject) => {
     // 清空 NODE_OPTIONS:避免宿主环境(如 WorkBuddy)注入的 shim / --use-system-ca
     // 干扰后端进程;DSH_HOME 隔离到应用数据目录
     const env = { ...process.env, DSH_HOME: dshHome, NODE_OPTIONS: "" };
-    backendProc = spawn(nodeBinary(), [binJs, "web", "--port", String(port)], {
+    const node = nodeBinary();
+    log("starting backend:", node, binJs, "--port", port, "cwd=", root);
+    backendProc = spawn(node, [binJs, "web", "--port", String(port)], {
       cwd: root,
       env,
       stdio: ["ignore", "pipe", "pipe"],
@@ -127,9 +167,11 @@ async function startBackend(port) {
       const s = String(d);
       stderrTail = (stderrTail + s).slice(-4000);
       console.error("[dsh]", s.trim());
+      log("[dsh stderr]", s.trim());
     });
     backendProc.on("exit", (code, sig) => {
       console.log(`[dsh] backend exited (${code ?? sig})`);
+      log("[dsh] backend exited", code ?? sig);
       if (mainWindow && !mainWindow.isDestroyed() && code !== 0) {
         mainWindow.loadURL(
           "data:text/html;charset=utf-8," +
@@ -137,7 +179,7 @@ async function startBackend(port) {
         );
       }
     });
-    waitForServer(port)
+    waitForServer(port, timeoutMs)
       .then(resolve)
       .catch((err) => {
         reject(new Error(`${err.message}\n\n后端输出:\n${stderrTail || "(无输出)"}`));
@@ -176,19 +218,53 @@ app.whenReady().then(async () => {
   // 立即显示加载页,再异步启动后端
   mainWindow.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(LOADING_HTML));
 
-  let port;
-  try {
-    port = await findFreePort(BASE_PORT);
-    await startBackend(port);
-  } catch (err) {
-    console.error("启动失败:", err);
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.loadURL(
-        "data:text/html;charset=utf-8," + encodeURIComponent(errorPage(err.message))
-      );
+  async function tryStart(resetOnFailure) {
+    let port;
+    try {
+      port = await findFreePort(BASE_PORT);
+      // 首次给 45s,重置重试后给 4 分钟
+      await startBackend(port, resetOnFailure ? 45000 : 240000);
+    } catch (err) {
+      console.error("启动失败:", err);
+      log("启动失败:", err && err.message ? err.message : err);
+
+      if (resetOnFailure && err.message && err.message.includes("超时")) {
+        log("后端启动超时,准备重置 DSH_HOME 后重试一次...");
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.loadURL(
+            "data:text/html;charset=utf-8," +
+              encodeURIComponent(
+                LOADING_HTML.replace(
+                  "正在启动 dsh 服务…",
+                  "检测到数据异常,正在重置并重启服务…"
+                )
+              )
+          );
+        }
+        if (backendProc && !backendProc.killed) {
+          try {
+            backendProc.kill();
+          } catch {
+            /* ignore */
+          }
+        }
+        if (resetDshHome()) {
+          return tryStart(false);
+        }
+      }
+
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.loadURL(
+          "data:text/html;charset=utf-8," + encodeURIComponent(errorPage(err.message))
+        );
+      }
+      return null;
     }
-    return;
+    return port;
   }
+
+  const port = await tryStart(true);
+  if (!port) return;
 
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.loadURL(`http://127.0.0.1:${port}/`);

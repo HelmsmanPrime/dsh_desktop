@@ -16,12 +16,14 @@
   },
   "devDependencies": {
     "electron": "^31.7.7",
-    "electron-builder": "^24.13.3"
+    "electron-builder": "^24.13.3",
+    "rcedit": "^5.0.1"
   },
   "build": {
     "appId": "com.helmsman.dsh-desktop",
     "productName": "DSH Desktop",
     "copyright": "© 2026 HelmsmanPrime",
+    "afterAllArtifactBuild": "scripts/patch-icons.mjs",
     "directories": {
       "output": "release",
       "buildResources": "build"
